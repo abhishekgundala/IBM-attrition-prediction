@@ -1,0 +1,2454 @@
+---
+title: "Capstone"
+author: "Abhishek & Sajjiynie"
+date: "2024-03-28"
+output:
+  html_document:
+    css: styles.css
+    code_folding: show
+    anchor_sections: true
+    toc: true
+
+---
+```{css, echo=FALSE}
+body {
+  background-color: #10101010; 
+  color: #333333; 
+}
+.fold-show::before {
+  content: 'Show Code';
+}
+.fold-hide::before {
+  content: 'Hide Code';
+}
+
+```
+
+
+
+# Loading All necessary Libraries
+
+
+```{r}
+
+library(DataExplorer)
+library(plumber)
+library(readr)
+library(tidyverse)
+library(caret)
+library(randomForest)
+library(glmnet)
+library(ggplot2)
+library(dplyr)
+library(scales)
+library(cowplot)
+library(corrplot)
+library(MatchIt)
+library(caTools)
+library(glm2)
+library(reshape2)
+library(pROC)
+library(car)
+library(rpart)
+library(rpart.plot)
+library(RColorBrewer)
+library(plotly)
+library(cluster)
+
+
+
+ab_dataset_cap <- read_csv("ibmdatacleaned.csv")
+
+```
+
+# Dataset Exploration
+
+```{r echo = TRUE, results = 'hide'}
+
+data.frame(ab_dataset_cap)
+
+```
+
+
+# Variable conversion for Numeric and Categorical variables
+
+```{r}
+
+# Conversion of Numeric Variables
+numeric_vars <- c("Age", "DailyRate", "DistanceFromHome", "Education", "EmployeeNumber", 
+                  "EnvironmentSatisfaction", "HourlyRate", "JobInvolvement", "JobLevel", 
+                  "JobSatisfaction", "MonthlyIncome", "MonthlyRate", "NumCompaniesWorked", 
+                  "PercentSalaryHike", "PerformanceRating", "RelationshipSatisfaction", 
+                  "StandardHours", "StockOptionLevel", "TotalWorkingYears", 
+                  "TrainingTimesLastYear", "WorkLifeBalance", "YearsAtCompany", 
+                  "YearsInCurrentRole", "YearsSinceLastPromotion", "YearsWithCurrManager", "Index")
+
+# Ensure that the variables actually exists in the dataframe before conversion
+existing_numeric_vars <- numeric_vars[numeric_vars %in% names(ab_dataset_cap)]
+
+# Convert existing variables to numeric
+ab_dataset_cap[existing_numeric_vars] <- lapply(ab_dataset_cap[existing_numeric_vars], function(x) as.numeric(as.character(x)))
+
+# Update: Convert categorical character variables to factors (As previously defined)
+categorical_vars <- c("Department", "EducationField", "JobRole", "Attrition", "BusinessTravel",
+                      "Education Desc", "EnvironmentSatisfaction Desc", "Gender", 
+                      "JobInvolvement Desc", "JobSatisfaction Desc", "MaritalStatus", 
+                      "OverTime", "WorkLifeBalance Desc", "Employee Source")
+
+# Filter existing categorical variables
+existing_categorical_vars <- categorical_vars[categorical_vars %in% names(ab_dataset_cap)]
+
+ab_dataset_cap$`RelationshipSatisfaction Desc` <- as.factor(ab_dataset_cap$`RelationshipSatisfaction Desc`)
+
+
+# Convert to factor
+ab_dataset_cap[existing_categorical_vars] <- lapply(ab_dataset_cap[existing_categorical_vars], factor)
+
+# Print structure to verify changes
+str(ab_dataset_cap)
+
+```
+
+
+# Missing Values 
+
+
+```{r}
+# Calculate the number of missing values in each column
+missing_values <- sapply(ab_dataset_cap, function(x) sum(is.na(x)))
+missing_values
+```
+
+
+#Summary of Missing Values
+
+```{r corrected-summary-missing-values}
+
+
+# Summary of missing (NA) values
+na_summary <- ab_dataset_cap %>%
+  summarise_all(~sum(is.na(.))) %>%
+  mutate(Source = "NA")
+
+# If interested in zeros as potential placeholders for missing data
+zero_summary <- ab_dataset_cap %>%
+  summarise_all(~sum(. == 0, na.rm = TRUE)) %>%
+  mutate(Source = "Zero")
+
+# Combine summaries
+summary_combined <- bind_rows(na_summary, zero_summary)
+
+print(summary_combined)
+
+
+```
+
+
+
+# Attrition Class and Distribution
+
+
+```{r}
+
+# Calculate total count for normalization
+total_count_numeric <- sum(table(ab_dataset_cap$Attrition))
+
+# Visualize the distribution of Attrition_numeric with numbers and rounded percentages
+ggplot(ab_dataset_cap, aes(x = factor(Attrition), fill = factor(Attrition))) +
+  geom_bar() +
+  geom_text(
+    aes(label = paste(..count.., " (", round(..count../total_count_numeric*100, 2), "%)", sep="")),
+    stat = 'count', 
+    position = position_stack(vjust = 0.5)
+  ) +
+  theme_minimal() +
+  labs(title = "Distribution of Attrition", x = "Attrition Status", y = "Count") +
+  scale_y_continuous(labels = scales::comma)
+
+
+
+```
+
+
+# Column Names
+
+
+```{r}
+colnames(ab_dataset_cap)
+```
+
+
+# Data Profiling Report
+
+
+```{r eda-manual-sections-improved, echo=FALSE, message=FALSE, warning=FALSE, fig.width=12, fig.height=10}
+
+
+# Set plot size larger for Jupyter notebooks/RStudio Viewer to prevent label overlap
+options(repr.plot.width = 12, repr.plot.height = 10)
+
+# Dataset introduction
+introduce(ab_dataset_cap)
+
+# Data structure
+str(ab_dataset_cap)
+
+# Missing value profile
+plot_missing(ab_dataset_cap)
+
+# Univariate distribution for all features
+
+selected_vars <- names(ab_dataset_cap)[1:10]  # Adjust the index to select variables
+plot_histogram(ab_dataset_cap[, selected_vars])
+
+# Correlation analysis
+
+plot_correlation(ab_dataset_cap[, selected_vars])
+
+# Principal Component Analysis for dimensionality reduction visualization
+
+plot_prcomp(ab_dataset_cap, maxcat = 5L)
+
+# Bivariate distribution with target variable (if Attrition is a factor)
+plot_boxplot(ab_dataset_cap, by = "Attrition")
+
+```
+
+
+# Conversion of Variables for modelling
+
+
+```{r}
+
+# Convert Attrition to a binary numeric variable
+ab_dataset_cap$Attrition_numeric <- as.numeric(ab_dataset_cap$Attrition == "Voluntary Resignation")
+
+# Calculate correlations with Attrition
+correlations <- cor(ab_dataset_cap[, sapply(ab_dataset_cap, is.numeric)])
+cor_attrition <- correlations[,"Attrition_numeric"]
+sorted_cor <- sort(cor_attrition, decreasing = TRUE)
+
+# View the correlations sorted
+print(sorted_cor)
+
+```
+
+# Interpretations of initial correlation matrix
+
+DistanceFromHome (0.069913505):
+Positive correlation (0.07) with Attrition_numeric suggests that there is a slight tendency for employees who live farther from the workplace to have a slightly higher likelihood of attrition.
+
+NumCompaniesWorked (0.040475987):
+Positive correlation (0.04) with Attrition_numeric suggests that employees who have worked at more companies before joining the current one may have a slightly higher tendency to leave.
+
+HourlyRate (0.012403772):
+Very weak positive correlation (0.01) with Attrition_numeric, indicating that there's almost no relationship between hourly rate and attrition.
+
+Index (-0.002001987):
+This variable seems to have almost no correlation with Attrition_numeric or other variables, indicated by a very close to zero coefficient.
+
+EmployeeNumber (-0.002019309):
+Almost no correlation with Attrition_numeric or other variables.
+
+RelationshipSatisfaction (-0.005611355):
+Very weak negative correlation (-0.01) with Attrition_numeric, suggesting that employees with higher relationship satisfaction might have a slightly lower likelihood of attrition.
+
+PerformanceRating (-0.006735761):
+Very weak negative correlation (-0.01) with Attrition_numeric, implying that employees with higher performance ratings might have a slightly lower likelihood of attrition.
+
+MonthlyRate (-0.008343636):
+Very weak negative correlation (-0.01) with Attrition_numeric, indicating that there's almost no relationship between monthly rate and attrition.
+
+YearsSinceLastPromotion (-0.018987128):
+Weak negative correlation (-0.02) with Attrition_numeric, suggesting that employees who have been promoted more recently may have a slightly lower likelihood of attrition.
+
+
+
+
+# Initial variable selection
+
+```{r create-subset}
+# Creating a subset by excluding specified columns
+ab_dataset_reduced <- ab_dataset_cap[, !(names(ab_dataset_cap) %in% c(
+  "Education Desc", 
+  "EnvironmentSatisfaction Desc", 
+  "JobInvolvement Desc", 
+  "JobSatisfaction Desc", 
+  "RelationshipSatisfaction Desc", 
+  "WorkLifeBalance Desc",
+  "EmployeeNumber",
+  "Unique Emp ID",
+  "Application ID",
+  "Index",
+  "StandardHours",
+  "Attrition",
+  "Employee Source"
+))]
+
+```
+
+
+# Correlation Matrix heatmap
+
+
+
+```{r new - correlation}
+
+
+
+# Calculate correlation matrix for numeric variables
+numeric_vars <- sapply(ab_dataset_reduced, is.numeric)
+cor_matrix <- cor(ab_dataset_reduced[, numeric_vars], use = "pairwise.complete.obs")
+
+# Melt the correlation matrix into a long format
+melted_cor_matrix <- melt(cor_matrix)
+
+# Create the heatmap with ggplot2
+ggplot(data = melted_cor_matrix, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(name = "Correlation", low = "blue", mid = "white", high = "red", midpoint = 0) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.text.y = element_text(angle = 0),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+  labs(title = "Correlation Matrix Heatmap with initial selected Variables")
+
+
+
+```
+
+# Re checking the variable names in reduced dataset
+
+
+```{r}
+
+colnames(ab_dataset_reduced)
+
+```
+
+# Attrition Class Distribution
+
+
+```{r}
+
+
+# Create a more appealing bar plot using ggplot2
+ggplot(ab_dataset_reduced, aes(x=factor(Attrition_numeric), fill=factor(Attrition_numeric))) + 
+  geom_bar(stat="count", position="dodge", color="black") +
+  geom_text(stat='count', aes(label=..count..), vjust=-0.5, color="black") +
+  scale_fill_manual(values=c("#56B4E9", "#E69F00"), labels=c("No Attrition (0)", "Attrition (1)")) +
+  scale_y_continuous(labels=scales::comma) +
+  labs(title="Attrition Numeric Distribution", x="Attrition Status", y="Frequency", fill="Attrition Status") +
+  theme_minimal() +
+  theme(text = element_text(size=12, face="bold"), 
+        plot.title = element_text(hjust = 0.5), 
+        legend.title = element_blank(), 
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.major = element_line(size = 0.1, linetype = 'solid', color = "gray"),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "white", color = "white"),
+        legend.position = "bottom")
+
+```
+
+
+# Data Pre-processing Steps
+
+
+```{r}
+
+# Convert 'Attrition_numeric' to a factor
+ab_dataset_reduced$Attrition_numeric <- as.factor(ab_dataset_reduced$Attrition_numeric)
+
+# Check for multicollinearity
+cor_matrix <- cor(ab_dataset_reduced[, sapply(ab_dataset_reduced, is.numeric)], use = "pairwise.complete.obs")
+
+# Identify high correlations excluding self-correlations
+high_cor <- which(abs(cor_matrix) > 0.7 & cor_matrix != 1, arr.ind = TRUE)
+
+high_cor_vars <- data.frame(
+  Var1 = rownames(cor_matrix)[high_cor[, 1]],
+  Var2 = colnames(cor_matrix)[high_cor[, 2]],
+  Correlation = cor_matrix[high_cor]
+)
+
+print(high_cor_vars)
+```
+
+
+
+# Plotting positive correlation 1
+
+
+```{r}
+
+# Positive Correlations
+p1 <- ab_dataset_reduced %>% select(TotalWorkingYears, MonthlyIncome) %>%
+ggplot(aes(x=TotalWorkingYears, y=MonthlyIncome)) + 
+  geom_point(colour = "#6D98BA", alpha=0.5) + 
+  geom_smooth(method="loess", color="#D95F02") + 
+  theme_minimal() + 
+  theme(legend.position="bottom", 
+        plot.title=element_text(hjust=0.5), 
+        plot.subtitle=element_text(hjust=0.5)) + 
+  labs(title="Positive Correlation", subtitle="Monthly Income vs Working Years")
+
+
+
+# Arrange the plots into a grid
+plot_grid(p1)
+
+```
+
+
+# Attrition Numeric against years in current role
+
+
+
+```{r}
+# YearsInCurrentRole vs Attrition_numeric
+mean_years_in_current_role <- mean(ab_dataset_reduced$YearsInCurrentRole)
+p2 <- ab_dataset_reduced %>% select(YearsInCurrentRole, Attrition_numeric) %>%
+  ggplot(aes(x = YearsInCurrentRole, fill = Attrition_numeric)) +
+  geom_histogram(position = "dodge", bins = 20, color = "black", alpha = 0.7) +
+  geom_vline(xintercept = mean_years_in_current_role, linetype = "dashed", size = 1, color = "red", 
+             aes(label = paste("Mean:", round(mean_years_in_current_role, 2)))) +
+  scale_color_manual(values = c("red")) +
+  theme_minimal() +
+  labs(title = "Attrition by Years in Current Role", x = "Years in Current Role", y = "Count", fill = "Attrition") +
+  theme(legend.position = "top")
+print(p2)
+
+```
+
+
+# Training times Last year vs Attrition numeric
+
+
+```{r}
+# TrainingTimesLastYear vs Attrition_numeric
+mean_training_times_last_year <- mean(ab_dataset_reduced$TrainingTimesLastYear)
+p3 <- ab_dataset_reduced %>% select(TrainingTimesLastYear, Attrition_numeric) %>%
+  ggplot(aes(x = TrainingTimesLastYear, fill = Attrition_numeric)) +
+  geom_histogram(position = "dodge", bins = 20, color = "black", alpha = 0.7) +
+  geom_vline(xintercept = mean_training_times_last_year, linetype = "dashed", size = 1, color = "red", 
+             aes(label = paste("Mean:", round(mean_training_times_last_year, 2)))) +
+  scale_color_manual(values = c("red")) +
+  theme_minimal() +
+  labs(title = "Attrition by Training Times Last Year", x = "Training Times Last Year", y = "Count", fill = "Attrition") +
+  theme(legend.position = "top")
+print(p3)
+
+```
+
+# Distance from home vs Attrition numeric
+
+```{r}
+# DistanceFromHome vs Attrition_numeric
+mean_distance_from_home <- mean(ab_dataset_reduced$DistanceFromHome)
+p4 <- ab_dataset_reduced %>% select(DistanceFromHome, Attrition_numeric) %>%
+  ggplot(aes(x = DistanceFromHome, fill = Attrition_numeric)) +
+  geom_histogram(position = "dodge", bins = 20, color = "black", alpha = 0.7) +
+  geom_vline(xintercept = mean_distance_from_home, linetype = "dashed", size = 1, color = "red", 
+             aes(label = paste("Mean:", round(mean_distance_from_home, 2)))) +
+  scale_color_manual(values = c("red")) +
+  theme_minimal() +
+  labs(title = "Attrition by Distance from Home", x = "Distance from Home", y = "Count", fill = "Attrition") +
+  theme(legend.position = "top")
+print(p4)
+
+```
+
+# Calculating Mean age across different departments 
+
+```{r}
+mean_ages <- ab_dataset_reduced %>%
+  group_by(Attrition_numeric) %>%
+  summarise(
+    MeanAge = mean(Age, na.rm = TRUE),
+    MaxCount = max(table(Age))
+  )
+
+```
+
+
+
+
+# Calculate the mean age and the maximum count for each attrition status
+
+```{r positive_correlation_totalworkingyears, fig.cap="Total Working Years vs Attrition"}
+
+
+# Compute mean ages and max count for each attrition status
+mean_ages <- ab_dataset_reduced %>%
+  group_by(Attrition_numeric) %>%
+  summarise(
+    MeanAge = mean(Age, na.rm = TRUE),
+    MaxCount = max(table(Age))
+  )
+
+# Create the histogram
+age_distribution_plot <- ab_dataset_reduced %>%
+  ggplot(aes(x = Age, fill = factor(Attrition_numeric))) + 
+  geom_histogram(binwidth = 1, position = 'identity', alpha = 0.6) +
+  scale_fill_manual(values = c("#5DA5B3", "#26547C"), 
+                    labels = c("Stayed", "Left"),
+                    name = "Attrition Status") +
+  geom_vline(data = mean_ages,
+             aes(xintercept = MeanAge, color = factor(Attrition_numeric)),
+             linetype = "dashed",
+             size = 1.5) +
+  geom_text(data = mean_ages, 
+            aes(x = MeanAge, label = paste("Mean:", round(MeanAge, 1)), y = MaxCount, color = factor(Attrition_numeric)),
+            size = 4, vjust = 1.5, fontface = "bold", color = "black") +
+  scale_color_manual(values = c("#5DA5B3", "#26547C")) +
+  guides(color = FALSE) +
+  theme_minimal() +
+  labs(title = "Age Distribution by Attrition Status",
+       x = "Age",
+       y = "Count") +
+  theme(legend.position = "top",
+        plot.title = element_text(size = 14, face = "bold"),
+        axis.title = element_text(size = 12),
+        legend.background = element_blank(),
+        legend.key = element_blank())
+
+
+
+# Print the interactive plot
+print(age_distribution_plot)
+
+
+```
+
+
+# Age vs Monthly Income
+
+
+```{r}
+
+# Positive Correlations
+p1 <- ab_dataset_reduced %>% select(Age, MonthlyIncome) %>%
+  ggplot(aes(x=Age, y=MonthlyIncome)) + 
+  geom_point(colour = "#6D98BA", alpha=0.5) + 
+  geom_smooth(method="loess", color="#D95F02") + 
+  theme_minimal() + 
+  theme(legend.position="bottom", 
+        plot.title=element_text(hjust=0.5), 
+        plot.subtitle=element_text(hjust=0.5)) + 
+  labs(title="Positive Correlation", subtitle="Monthly Income vs Age")
+
+# Arrange the plots into a grid
+plot_grid(p1)
+
+# Define the color palette
+color_palette <- brewer.pal(9, "Blues")
+
+```
+
+
+
+
+```{r}
+
+mean_ages_dept <- ab_dataset_reduced %>%
+  group_by(Department, Attrition_numeric) %>%
+  summarise(
+    MeanAge = mean(Age, na.rm = TRUE),
+    MaxCount = max(table(Age)),
+    .groups = 'drop' # This will drop the grouping so that we don't carry it into our plot
+  )
+
+
+```
+
+
+
+# Age Distribution
+
+
+```{r}
+age_distribution_plot_dept <- ab_dataset_reduced %>%
+  ggplot(aes(x = Department, fill = factor(Attrition_numeric))) + 
+  geom_bar(position = 'dodge', alpha = 0.6) +
+  scale_fill_manual(values = c("#6D88BA", "#D93F02"), 
+                    labels = c("Stayed", "Left"),
+                    name = "Attrition Status") +
+  geom_text(data = mean_ages_dept, 
+            aes(x = Department, y = MaxCount, 
+                label = paste("Mean:", round(MeanAge, 1)), 
+                color = factor(Attrition_numeric)),
+            size = 4, vjust = -0.5, fontface = "bold", 
+            position = position_dodge(width = 0.9)) +
+  scale_color_manual(values = c("black", "black")) + # Set both colors to white
+  theme_minimal() +
+  labs(title = "Attrition Distribution by Department",
+       x = "Department",
+       y = "Count") +
+  theme(legend.position = "top",
+        plot.title = element_text(size = 14, face = "bold"),
+        axis.title = element_text(size = 12),
+        legend.text = element_text(color = "black"), # Ensure legend text is black for visibility
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        legend.title = element_text(color = "black")) + # Ensure legend title is black for visibility
+  guides(color = FALSE) # Remove the color guide for the text
+
+# Print the plot
+print(age_distribution_plot_dept)
+
+
+```
+
+
+
+
+# Scaling the numerical Variables
+
+
+```{r}
+
+# Scale the numeric variables in the dataset "ab_dataset_reduced"
+numeric_vars <- sapply(ab_dataset_reduced, is.numeric)
+ab_dataset_reduced[numeric_vars] <- scale(ab_dataset_reduced[numeric_vars])
+
+# Ensure the dataset is in a data frame format
+ab_dataset_reduced <- as.data.frame(ab_dataset_reduced)
+
+# View the structure of the dataset to confirm changes
+str(ab_dataset_reduced)
+
+
+```
+
+# Summary of numerical Variables
+
+```{r}
+summary(ab_dataset_reduced[numeric_vars])
+```
+
+
+
+# Splitting the Dataset into Training and Testing
+
+```{r}
+
+set.seed(123)  # for reproducible random sampling
+
+# Split the data into training and testing sets
+index <- createDataPartition(y = ab_dataset_reduced$Attrition_numeric, p = 0.7, list = FALSE)
+training_set <- ab_dataset_reduced[index, ]
+testing_set <- ab_dataset_reduced[-index, ]
+
+# Check the number of cases in each set
+nrow(training_set)  # Should be approximately 70% of the data
+nrow(testing_set)   # Should be approximately 30% of the data
+
+# Convert Attrition_numeric to a factor with explicit levels in both the training and testing sets
+training_set$Attrition_numeric <- factor(training_set$Attrition_numeric, levels = c(0, 1))
+testing_set$Attrition_numeric <- factor(testing_set$Attrition_numeric, levels = c(0, 1))
+
+
+```
+
+
+
+# Balancing the Attrition_numeric Class
+
+```{r}
+
+
+# Check initial class distribution
+table(training_set$Attrition_numeric)
+
+
+# Balance the classes
+training_set <- downSample(x = training_set[, -which(names(training_set) == "Attrition_numeric")],
+                                    y = training_set$Attrition_numeric)
+
+# Check the new class distribution to confirm balancing
+table(training_set$Class)
+
+# Renaming 'Class' back to 'Attrition_numeric'
+training_set$Attrition_numeric <- training_set$Class
+training_set$Class <- NULL 
+
+
+```
+
+
+
+
+# Visual Representation of Attrition after balancing
+
+```{r}
+
+# Calculate counts and percentages
+attrition_counts <- table(training_set$Attrition_numeric)
+attrition_df <- data.frame(Attrition_numeric = names(attrition_counts), 
+                           Count = as.integer(attrition_counts))
+attrition_df$Percentage <- (attrition_df$Count / sum(attrition_df$Count)) * 100
+
+# Create the bar plot
+ggplot(attrition_df, aes(x = Attrition_numeric, y = Count, fill = Attrition_numeric)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste(Count, " (", sprintf("%.1f", Percentage), "%)", sep="")), 
+            vjust = -0.5, position = position_stack(vjust = 0.5)) +
+  labs(title = "Distribution of Attrition Numeric", x = "Attrition Numeric Status", y = "Count") +
+  theme_minimal()
+
+```
+
+
+
+```{r}
+names(training_set)
+```
+
+
+
+
+# Fitting Logistic model 1 on training set 
+
+
+```{r}
+
+
+# Fit logistic regression model on training set
+logistic_model <- glm(Attrition_numeric ~ ., data = training_set, family = binomial())
+
+# Print out the results of the logistic regression model
+summary(logistic_model)
+
+```
+
+# Logistic model 1 on test set & confusion matrix
+
+
+```{r}
+
+# Predicting on the testing set
+testing_set_predictions <- predict(logistic_model, newdata = testing_set, type = "response")
+
+# Converting probabilities to binary class predictions based on a threshold (usually 0.5)
+predicted_classes <- ifelse(testing_set_predictions > 0.5, 1, 0)
+
+# Create a confusion matrix
+conf_mat <- confusionMatrix(as.factor(predicted_classes), as.factor(testing_set$Attrition_numeric))
+
+# Print the confusion matrix along with statistics
+print(conf_mat)
+
+
+```
+
+
+# Interpretation for Logistic model 1
+
+Reference:
+0 represents the negative class (e.g., employees who do not leave the company).
+1 represents the positive class (e.g., employees who leave the company).
+
+Prediction:
+0 represents the model's prediction of the negative class.
+1 represents the model's prediction of the positive class.
+
+True Positives (TP): 3888
+The model correctly predicted that 3888 instances belong to the positive class (employees who leave) and indeed they belong to the positive class.
+
+False Positives (FP): 321
+The model incorrectly predicted that 321 instances belong to the positive class when they actually belong to the negative class (Type I error).
+
+True Negatives (TN): 776
+The model correctly predicted that 776 instances belong to the negative class (employees who don't leave) and indeed they belong to the negative class.
+
+False Negatives (FN): 1961
+The model incorrectly predicted that 1961 instances belong to the negative class when they actually belong to the positive class (Type II error).
+
+Accuracy: 0.6715
+
+Overall proportion of correct predictions made by the model.
+
+Precision (Positive Predictive Value): 0.9237
+Proportion of instances predicted as positive by the model that are actually positive.
+
+Recall (Sensitivity): 0.6647
+Proportion of actual positive instances that were correctly predicted by the model.
+
+Specificity: 0.7074
+Proportion of actual negative instances that were correctly predicted by the model.
+
+F1 Score:
+Harmonic mean of precision and recall, providing a balance between the two metrics.
+
+Kappa: 0.2315
+A statistic that measures inter-rater agreement for categorical items.
+
+Detection Rate: 0.5597
+Rate of correct predictions among all actual positive instances.
+
+Balanced Accuracy: 0.6861
+Average of sensitivity and specificity, useful for imbalanced datasets.
+
+
+
+
+# AUC for Logistic Model
+
+
+```{r}
+
+# Calculate AUC
+roc_result <- roc(response = testing_set$Attrition_numeric, predictor = as.numeric(testing_set_predictions))
+auc_value <- auc(roc_result)
+
+# Print AUC
+print(auc_value)
+
+```
+
+
+# AUC plot
+
+
+```{r}
+
+
+# Calculate ROC curve
+roc_result <- roc(response = testing_set$Attrition_numeric, predictor = as.numeric(testing_set_predictions))
+
+# Calculate AUC
+auc_value <- auc(roc_result)
+
+# Create a data frame from the roc object
+roc_data <- data.frame(
+  TPR = roc_result$sensitivities,    # True Positive Rate (Sensitivity)
+  FPR = roc_result$specificities,    # False Positive Rate (1 - Specificity)
+  thresholds = roc_result$thresholds
+)
+
+
+# Plot ROC curve using ggplot2
+ggroc_plot <- ggplot(data = roc_data, aes(x = 1 - FPR, y = TPR)) +
+  geom_line(color = "blue", size = 1.5) +
+  geom_ribbon(aes(ymin = 0, ymax = TPR), fill = "blue", alpha = 0.2) +  # Adds shaded area under curve
+  geom_abline(linetype = "dashed", color = "red") +  # Adds the reference line
+  ggtitle("ROC Curve with AUC") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5),  # Centers the title
+        axis.title = element_text(size = 12),    # Adjust the axis titles size
+        axis.text = element_text(size = 12)) +   # Adjust the axis text size
+  xlab("False Positive Rate (1 - Specificity)") +
+  ylab("True Positive Rate (Sensitivity)") +
+  annotate("text", x = .5, y = .2, label = paste("AUC =", round(auc_value, 2)), 
+           size = 5, color = "black", hjust = 0.5)
+
+# Print the plot
+print(ggroc_plot)
+
+```
+
+
+# Correlation plot after logistic model
+
+
+```{r}
+
+numeric_data <- training_set[, sapply(training_set, is.numeric)]
+
+# Calculate the correlation matrix
+cor_matrix <- cor(numeric_data)
+
+# Identify highly correlated pairs
+highly_correlated_pairs <- findCorrelation(cor_matrix, cutoff = 0.7, verbose = TRUE)
+
+# Print out highly correlated pairs
+print(highly_correlated_pairs)
+
+# Visualize the correlation matrix
+corrplot(cor_matrix, method = "circle", type = "upper", order = "hclust",
+         tl.col = "black", tl.srt = 45, tl.cex = 0.6, cl.cex = 0.6)
+
+```
+
+
+
+# LASSO Regression for Variable significance
+
+
+```{r}
+
+# Create a matrix of predictors and a response variable vector
+x <- model.matrix(Attrition_numeric ~ . - 1, data = training_set)  # -1 to exclude intercept
+y <- training_set$Attrition_numeric
+
+
+```
+
+
+```{r}
+set.seed(123)  # For reproducible results
+cv_model <- cv.glmnet(x, y, alpha = 1, family = "binomial")  # alpha = 1 for LASSO
+
+```
+
+
+
+```{r}
+
+best_lambda <- cv_model$lambda.min
+
+```
+
+
+```{r}
+
+final_model <- glmnet(x, y, alpha = 1, lambda = best_lambda, family = "binomial")
+
+```
+
+
+
+```{r}
+# Print non-zero coefficients
+print(coef(final_model))
+
+```
+
+
+# Interpretation of coefficients (lasso)
+ 
+(Intercept): The model intercept or bias term is approximately -1.666, which is the log-odds of the outcome when all predictor variables are zero.
+
+Coefficients Close to Zero (.): These are variables for which LASSO has effectively shrunk the coefficient to zero, suggesting that they do not contribute significantly to the model. The dot (.) is a placeholder indicating no effect after the penalty has been applied.
+
+Positive Coefficients: Variables such as DepartmentSales (0.166) and BusinessTravelTravel_Frequently (1.336) have positive coefficients, indicating that higher values of these variables are associated with an increased log-odds of the outcome (possibly higher attrition, if Attrition_numeric = 1 represents attrition). For instance, employees in the sales department or those who travel frequently are more likely to experience the event of interest (which might be attrition in this context).
+
+Negative Coefficients: Variables like JobRoleHuman Resources Manager (-3.278) have negative coefficients, indicating that higher values of these variables are associated with a decreased log-odds of the outcome. This might suggest that being in a human resources manager role is associated with a lower likelihood of attrition.
+
+Large Positive Coefficients: Some coefficients like OverTimeYes (0.865) are substantially positive, which would suggest a strong association with the outcome. Employees who work overtime might have a much higher likelihood of attrition.
+Significant Predictors After Shrinkage: The LASSO method penalizes the absolute size of the coefficients and can drive some to zero, effectively selecting variables by removing those with negligible effects. The remaining non-zero coefficients are the variables LASSO has selected as having a more significant relationship with the outcome.
+
+
+
+# Removing variables that do not contribute significantly
+
+
+
+
+```{r}
+
+# Define all variables to be removed in one list
+variables_to_remove <- c("TotalWorkingYears", "YearsWithCurrManager", "YearsInCurrentRole",
+  "MonthlyRate", "HourlyRate", "DailyRate", "JobLevel", "JobRole")
+
+# Removing the specified variables from the dataset
+ab_dataset_reduced <- ab_dataset_reduced[, !(names(ab_dataset_reduced) %in% variables_to_remove)]
+
+# Confirm the removal by printing the remaining variable names
+print(names(ab_dataset_reduced))
+
+
+```
+
+
+
+
+# Logistic Model 2 - with selected variables
+
+
+```{r}
+
+set.seed(123) # for reproducibility
+
+# Create a partition to split the dataset into training and testing sets
+split <- createDataPartition(ab_dataset_reduced$Attrition_numeric, p = 0.7, list = FALSE)
+
+# Create the training and testing datasets
+trainingdata_reduced_ab <- ab_dataset_reduced[split, ]
+testingdata_reduced_ab <- ab_dataset_reduced[-split, ]
+
+
+
+# Balance the Attrition_numeric class in the training set
+set.seed(123) # for reproducibility
+
+trainingdata_balanced_ab <- upSample(x = trainingdata_reduced_ab[, -which(names(trainingdata_reduced_ab) == "Attrition_numeric")],
+                                     y = trainingdata_reduced_ab$Attrition_numeric)
+
+# Check the balance of the updated training set
+table(trainingdata_balanced_ab$Class)
+
+
+```
+
+
+# Fitting the logistic model 2
+
+
+```{r}
+
+# Fit the logistic regression model on the balanced training set
+reduced_logistic_model_ab <- glm(Class ~ ., data = trainingdata_balanced_ab, family = binomial())
+
+# Rename 'Class' back to 'Attrition_numeric'
+names(trainingdata_balanced_ab)[names(trainingdata_balanced_ab) == "Class"] <- "Attrition_numeric"
+
+# Fit the logistic regression model using 'Attrition_numeric' as the dependent variable
+reduced_logistic_model_ab_updated <- glm(Attrition_numeric ~ ., data = trainingdata_balanced_ab, family = binomial())
+
+# Print out the summary of the updated logistic regression model
+summary(reduced_logistic_model_ab_updated)
+
+
+```
+
+```{r}
+# Calculate Odds Ratios
+exp(coef(reduced_logistic_model_ab_updated))
+```
+
+# Odds ratio interpretation
+
+(Intercept): The odds ratio for the intercept is 0.1637746. Since the intercept represents the log odds of the outcome when all predictors are held at zero, this value isn't often used for interpretation in the context of the predictors.
+
+DepartmentResearch & Development: The odds of the outcome (likely an event such as employee attrition, based on the context of the variable names) for employees in the Research & Development department are 0.9872168 times those of the baseline department (not shown here, but typically the one excluded from the model), holding all other variables constant. This value is very close to 1, indicating almost no change in odds compared to the baseline.
+
+DepartmentSales: Employees in the Sales department have 1.4792136 times the odds of the outcome compared to the baseline department, holding all other variables constant. This suggests a 47.9% increase in the odds of the outcome occurring.
+Age: For each one-unit increase in age, the odds of the outcome decrease by a factor of 0.6736967 (or 32.6% decrease in the odds), holding other variables constant.
+
+BusinessTravelTravel_Frequently: Employees who travel frequently have 3.9708247 times the odds of the outcome compared to those who do not travel as part of their job (likely the reference category), all else being equal. This is a substantial increase in odds.
+
+MonthlyIncome: For each unit increase in monthly income (the scale isn’t specified here, so it could be dollars, thousands of dollars, etc.), the odds of the outcome are multiplied by 0.8816012, indicating a decrease in the odds of the outcome as monthly income increases.
+
+OverTimeYes: Employees who work overtime have 2.4904832 times the odds of the outcome happening compared to those who do not work overtime, controlling for other factors.
+
+MaritalStatusSingle: Employees who are single have 1.7334793 times the odds of the outcome compared to the baseline marital status (likely married or divorced, which is not listed).
+
+
+
+```{r}
+
+# Make predictions on the testing set using the logistic regression model
+testingdata_predictions_ab <- predict(reduced_logistic_model_ab_updated, newdata = testingdata_reduced_ab, type = "response")
+
+# Convert predictions to a binary outcome based on a threshold (e.g., 0.5)
+predicted_class_ab <- ifelse(testingdata_predictions_ab > 0.5, 1, 0)
+
+# Actual values of Attrition_numeric from the testing set
+actual_class_ab <- testingdata_reduced_ab$Attrition_numeric
+
+# Confusion Matrix to see how well the model did on the testing set
+confusionMatrix(data = as.factor(predicted_class_ab), reference = as.factor(actual_class_ab))
+
+```
+
+
+
+# ROC Curve for Logistic model 2
+
+
+```{r refined-roc-curve, echo=TRUE, message=FALSE, warning=FALSE}
+
+# Generate the ROC object from actual and predicted classes
+roc_object <- roc(response = actual_class_ab, predictor = testingdata_predictions_ab)
+
+# Create a data frame from the roc_object for ggplot
+roc_data <- data.frame(
+  True_Positive_Rate = roc_object$sensitivities,
+  False_Positive_Rate = roc_object$specificities,
+  Threshold = roc_object$thresholds
+)
+
+# Calculate AUC
+auc_value <- auc(roc_object)
+
+# ROC Curve plot with ggplot2
+roc_curve_plot <- ggplot(roc_data, aes(x = 1 - False_Positive_Rate, y = True_Positive_Rate)) +
+  geom_line(color = "#1c61b6", size = 1) +
+  geom_segment(aes(x = 0, y = 0, xend = 1, yend = 1), color = "red", linetype = "dotted") +
+  geom_text(aes(x = 0.8, y = 0.2, label = paste("AUC =", round(auc_value, 3))), hjust = 0, vjust = 0, color = "red") +
+  labs(title = "ROC Curve with AUC", x = "False Positive Rate (1 - Specificity)", y = "True Positive Rate (Sensitivity)") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5),
+        text = element_text(size = 12, face = "bold"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "white", color = "white"),
+        legend.position = "none")
+
+# Print the ROC Curve plot
+print(roc_curve_plot)
+
+```
+
+
+
+
+
+
+
+
+# Department wise (Human Resources, Sales and Research and Development) Logistic Regressions
+ 
+ 
+```{r}
+
+# Split the subset data into three separate data frames, one for each department
+hr_subset <- subset(ab_dataset_reduced, Department == "Human Resources")
+sales_subset <- subset(ab_dataset_reduced, Department == "Sales")
+rd_subset <- subset(ab_dataset_reduced, Department == "Research & Development")
+
+# Function to check factor levels in each subset, revised to exclude non-factors and return only factors
+check_factor_levels <- function(data) {
+  lapply(data[, sapply(data, is.factor)], function(x) length(levels(x)))
+}
+
+# Apply to each department
+hr_levels <- check_factor_levels(hr_subset)
+sales_levels <- check_factor_levels(sales_subset)
+rd_levels <- check_factor_levels(rd_subset)
+
+
+```
+
+
+
+# Sales Subset
+
+
+```{r}
+
+# Subset data for the Sales department from main dataset
+sales_subset <- subset(ab_dataset_reduced, Department == "Sales")
+
+# Remove the 'Department' column since it's no longer needed after filtering for Sales
+sales_subset$Department <- NULL
+
+# Remove single-level factors which can cause issues in modeling
+sales_subset <- sales_subset[, sapply(sales_subset, function(x) !is.factor(x) || length(levels(x)) > 1)]
+
+# Split data into training and testing sets
+set.seed(123) # For reproducibility
+index <- sample(1:nrow(sales_subset), round(0.75 * nrow(sales_subset)))
+train_data <- sales_subset[index, ]
+test_data_sales <- sales_subset[-index, ]
+
+# Balancing the training dataset by downsampling the majority class
+table_train <- table(train_data$Attrition_numeric)
+min_class_size <- min(table_train)
+
+# Subsetting each class to separate the majority and minority classes
+train_data_0 <- train_data[train_data$Attrition_numeric == 0, ]
+train_data_1 <- train_data[train_data$Attrition_numeric == 1, ]
+
+# Sampling from the majority class to balance with the minority class
+train_data_0_downsampled <- train_data_0[sample(1:nrow(train_data_0), min_class_size), ]
+train_data_balanced <- rbind(train_data_0_downsampled, train_data_1)
+
+# Shuffle rows to mix classes well, ensuring the model isn't biased towards the original order
+set.seed(123)
+train_data_balanced <- train_data_balanced[sample(nrow(train_data_balanced)), ]
+
+# Fit logistic regression model
+tryCatch({
+  sales_model <- glm(Attrition_numeric ~ ., data = train_data_balanced, family = binomial())
+  print(summary(sales_model))
+}, error = function(e) {
+  print("Error fitting model:")
+  print(e$message)
+})
+
+# Predict and evaluate with confusion matrix
+pred_prob <- predict(sales_model, test_data_sales, type = "response")
+pred_class <- ifelse(pred_prob > 0.5, 1, 0)
+confusion_matrix <- table(Predicted = pred_class, Actual = test_data_sales$Attrition_numeric)
+print(confusion_matrix)
+
+# Calculate and print accuracy
+accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+print(paste("Accuracy:", accuracy))
+
+
+```
+
+
+
+```{r}
+# Check for NAs or unusual values in the test dataset
+summary(test_data_sales)
+
+```
+
+
+
+
+
+```{r}
+
+# Predict and create the confusion matrix using the caret package
+predictions <- predict(sales_model, test_data_sales, type = "response")
+predicted_classes <- ifelse(predictions > 0.5, 1, 0)
+conf_matrix <- confusionMatrix(factor(predicted_classes), factor(test_data_sales$Attrition_numeric))
+
+# Print the detailed confusion matrix and associated statistics
+print(conf_matrix)
+
+```
+
+
+
+
+
+
+
+```{r roc-plot, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Check the number of rows in the test dataset
+print(paste("Number of rows in test dataset:", nrow(test_data_sales)))
+
+# Check the length of the prediction vector
+print(paste("Length of prediction vector:", length(pred_prob)))
+
+# If they don't match, there's a need to regenerate the predictions
+if (length(pred_prob) != nrow(test_data_sales)) {
+  print("Mismatch in vector lengths. Regenerating predictions.")
+  
+  # Ensure the model and test data are correctly aligned
+  pred_prob <- predict(sales_model, newdata = test_data_sales, type = "response")
+  
+  # Recheck lengths
+  print(paste("Rechecked length of prediction vector:", length(pred_prob)))
+  
+  # Continue with ROC and AUC calculation only if lengths match
+  if (length(pred_prob) == nrow(test_data_sales)) {
+    # Calculate ROC curve
+    roc_curve <- roc(response = test_data_sales$Attrition_numeric, predictor = pred_prob)
+    
+    # Plot ROC curve
+    plot(roc_curve, main = "ROC Curve for Sales Department Attrition Model")
+    abline(a = 0, b = 1, col = "red", lty = 2)  # Adding a reference line
+    
+    # Calculate AUC
+    auc_value <- auc(roc_curve)
+    print(paste("AUC:", auc_value))
+  } else {
+    print("Error: Prediction vector still does not match the number of rows in test data.")
+  }
+} else {
+  # Calculate ROC curve and AUC if lengths are confirmed to match
+  roc_curve <- roc(response = test_data_sales$Attrition_numeric, predictor = pred_prob)
+  
+  # Plot ROC curve
+  plot(roc_curve, main = "ROC Curve for Sales Department Attrition Model")
+  abline(a = 0, b = 1, col = "red", lty = 2)  # Adding a reference line
+  
+  # Calculate AUC
+  auc_value <- auc(roc_curve)
+  print(paste("AUC:", auc_value))
+}
+
+
+
+```
+
+
+
+
+# Research and Development subset
+
+
+```{r}
+# Subset data for the Research & Development department from the correct dataset
+rd_subset <- subset(ab_dataset_reduced, Department == "Research & Development")
+
+# Remove the 'Department' column as it is not needed after the subset by department
+rd_subset$Department <- NULL
+
+# Remove single-level factors which can cause issues in modeling
+rd_subset <- rd_subset[, sapply(rd_subset, function(x) !is.factor(x) || length(levels(x)) > 1)]
+
+# Split data into training and testing sets
+set.seed(123)  # Set seed for reproducibility
+index <- sample(1:nrow(rd_subset), round(0.75 * nrow(rd_subset)))
+train_data <- rd_subset[index, ]
+test_data_rd <- rd_subset[-index, ]
+
+# Balancing the training dataset by downsampling the majority class
+table_train <- table(train_data$Attrition_numeric)
+min_class_size <- min(table_train)
+
+# Subsetting each class to separate the majority and minority classes
+train_data_0 <- train_data[train_data$Attrition_numeric == 0, ]
+train_data_1 <- train_data[train_data$Attrition_numeric == 1, ]
+
+# Sampling from the majority class to balance with the minority class
+train_data_0_downsampled <- train_data_0[sample(1:nrow(train_data_0), min_class_size), ]
+train_data_balanced <- rbind(train_data_0_downsampled, train_data_1)
+
+# Shuffle rows to mix classes well, ensuring the model isn't biased towards the original order
+set.seed(123)
+train_data_balanced <- train_data_balanced[sample(nrow(train_data_balanced)), ]
+
+# Fit logistic regression model
+tryCatch({
+  rd_model <- glm(Attrition_numeric ~ ., data = train_data_balanced, family = binomial())
+  print(summary(rd_model))
+}, error = function(e) {
+  print("Error fitting model:")
+  print(e$message)
+})
+
+# Predict and evaluate with a confusion matrix
+pred_prob <- predict(rd_model, test_data_rd, type = "response")
+pred_class <- ifelse(pred_prob > 0.5, 1, 0)
+confusion_matrix <- table(Predicted = pred_class, Actual = test_data_rd$Attrition_numeric)
+print(confusion_matrix)
+
+# Calculate and print accuracy
+accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+print(paste("Accuracy:", accuracy))
+
+```
+
+# Research and Development confusion matrix
+
+
+```{r}
+
+# Predict and create the confusion matrix using the caret package
+predictions_rd <- predict(rd_model, test_data_rd, type = "response")
+predicted_classes_rd <- ifelse(predictions_rd > 0.5, 1, 0)
+conf_matrix_rd <- confusionMatrix(factor(predicted_classes_rd), factor(test_data_rd$Attrition_numeric))
+
+# Print the detailed confusion matrix and associated statistics
+print(conf_matrix_rd)
+
+```
+
+# R&D subset ROC curve
+
+```{r}
+
+  # Predict probabilities for the test set
+  pred_prob <- NULL
+  tryCatch({
+    pred_prob <- predict(rd_model, newdata = test_data_rd, type = "response")
+  }, error = function(e) {
+    print("Error in prediction:")
+    print(e$message)
+  })
+  
+  # Only proceed if pred_prob has been successfully created
+  if (!is.null(pred_prob) && length(pred_prob) == length(test_data_rd$Attrition_numeric)) {
+    library(pROC)
+    
+    # Generate ROC curve
+    roc_curve <- roc(response = test_data_rd$Attrition_numeric, predictor = pred_prob)
+    
+    # Plot ROC curve
+    plot(roc_curve, main = "ROC Curve for R&D Logistic Model")
+    abline(a = 0, b = 1, col = "red", lty = 2)  # Diagonal line for reference
+    
+    # Calculate AUC
+    auc_value <- auc(roc_curve)
+    print(paste("AUC:", auc_value))
+    
+    # Optional: Add AUC to the plot
+    legend("bottomright", legend = paste("AUC =", round(auc_value, 4)), box.lty = 1, col = "black", bty = "n")
+  } else {
+    print("Error: Unable to generate ROC curve due to previous error or mismatch in data lengths.")
+  }
+
+```
+
+
+
+
+```{r}
+
+```
+
+
+
+
+
+# Human Resources Subset
+
+
+
+```{r}
+# Subset data for the Human Resources department from the updated dataset name
+hr_subset <- subset(ab_dataset_reduced, Department == "Human Resources")
+
+# Remove the 'Department' column as it is no longer needed after the subset by department
+hr_subset$Department <- NULL
+
+# Remove single-level factors which can cause issues in modeling
+hr_subset <- hr_subset[, sapply(hr_subset, function(x) !is.factor(x) || length(levels(x)) > 1)]
+
+# Split data into training and testing sets
+set.seed(123)  # Set seed for reproducibility
+index <- sample(1:nrow(hr_subset), round(0.75 * nrow(hr_subset)))
+train_data <- hr_subset[index, ]
+test_data_hr <- hr_subset[-index, ]
+
+# Balancing the training dataset by downsampling the majority class
+table_train <- table(train_data$Attrition_numeric)
+min_class_size <- min(table_train)
+
+# Subsetting each class to separate the majority and minority classes
+train_data_0 <- train_data[train_data$Attrition_numeric == 0, ]
+train_data_1 <- train_data[train_data$Attrition_numeric == 1, ]
+
+# Sampling from the majority class to balance with the minority class
+train_data_0_downsampled <- train_data_0[sample(1:nrow(train_data_0), min_class_size), ]
+train_data_balanced <- rbind(train_data_0_downsampled, train_data_1)
+
+# Shuffle rows to mix classes well, ensuring the model isn't biased towards the original order
+set.seed(123)
+train_data_balanced <- train_data_balanced[sample(nrow(train_data_balanced)), ]
+
+# Fit logistic regression model
+tryCatch({
+  hr_model <- glm(Attrition_numeric ~ ., data = train_data_balanced, family = binomial())
+  print(summary(hr_model))
+}, error = function(e) {
+  print("Error fitting model:")
+  print(e$message)
+})
+
+# Predict and evaluate with a confusion matrix
+pred_prob <- predict(hr_model, test_data_hr, type = "response")
+pred_class <- ifelse(pred_prob > 0.5, 1, 0)
+confusion_matrix <- table(Predicted = pred_class, Actual = test_data_hr$Attrition_numeric)
+print(confusion_matrix)
+
+# Calculate and print accuracy
+accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+print(paste("Accuracy:", accuracy))
+
+
+```
+
+
+
+```{r}
+
+# Predict and create the confusion matrix using the caret package
+predictions_hr <- predict(hr_model, test_data_hr, type = "response")
+predicted_classes_hr <- ifelse(predictions_hr > 0.5, 1, 0)
+conf_matrix_hr <- confusionMatrix(factor(predicted_classes_hr), factor(test_data_hr$Attrition_numeric))
+
+# Print the detailed confusion matrix and associated statistics
+print(conf_matrix_hr)
+
+```
+
+
+
+
+```{r}
+# Fit logistic regression model
+tryCatch({
+  hr_model <- glm(Attrition_numeric ~ ., data = train_data_balanced, family = binomial())
+}, error = function(e) {
+  print("Error in model fitting:")
+  print(e$message)
+})
+
+# Make predictions on the test dataset
+tryCatch({
+  pred_prob <- predict(hr_model, newdata = test_data_hr, type = "response")
+}, error = function(e) {
+  print("Error in prediction:")
+  print(e$message)
+})
+
+# Re-check the lengths
+print(paste("Re-checked length of actual test responses:", length(test_data_hr$Attrition_numeric)))
+print(paste("Re-checked length of predicted probabilities:", length(pred_prob)))
+
+```
+
+
+
+# HR Subset ROC Curve   
+
+
+
+```{r}
+# Only proceed if lengths match
+if (length(test_data_hr$Attrition_numeric) == length(pred_prob)) {
+  library(pROC)
+
+  # Generate ROC curve
+  roc_curve <- roc(response = test_data_hr$Attrition_numeric, predictor = pred_prob)
+
+  # Plot ROC curve
+  plot(roc_curve, main = "ROC Curve for HR Department Logistic Regression Model")
+  abline(a = 0, b = 1, col = "red")  # Diagonal reference line
+
+  # Calculate AUC
+  auc_value <- auc(roc_curve)
+  print(paste("AUC:", auc_value))
+  
+  # Optional: Add AUC to the plot
+  legend("bottomright", legend = paste("AUC =", round(auc_value, 4)), box.lty = 1, col = "black", bty = "n")
+} else {
+  print("Length mismatch between test responses and predictions. Unable to generate ROC curve.")
+}
+
+```
+
+
+
+# Comparison of Model accuracies across subsets (HR, Sales, R&D)
+
+
+```{r}
+
+# Define a function to summarize and print model results
+print_model_summary <- function(department, model, test_data) {
+  cat("\n----------------------------------------\n")
+  cat("Department:", department, "\n")
+  pred_prob <- predict(model, test_data, type = "response")
+  pred_class <- ifelse(pred_prob > 0.5, 1, 0)
+  confusion_matrix <- table(Predicted = pred_class, Actual = test_data$Attrition_numeric)
+  accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+  
+  cat("Confusion Matrix:\n")
+  print(confusion_matrix)
+  cat("Accuracy:", sprintf("%.2f%%", accuracy * 100), "\n")
+}
+
+
+# Print summaries
+print_model_summary("Sales", sales_model, test_data_sales)
+print_model_summary("Research & Development", rd_model, test_data_rd)
+print_model_summary("Human Resources", hr_model, test_data_hr)
+
+```
+
+
+
+# Propensity Score Matching
+
+
+
+```{r}
+
+data <- ab_dataset_reduced
+# Calculate propensity scores
+ps_model <- glm(Attrition_numeric ~ ., data = trainingdata_balanced_ab, family = "binomial")
+
+# Perform matching
+match_data <- matchit(Attrition_numeric ~ ., data = trainingdata_balanced_ab, method = "nearest", model = ps_model)
+
+# Extract matched data
+matched_data <- match.data(match_data)
+
+set.seed(123)  # For reproducibility
+split <- sample.split(matched_data$Attrition_numeric, SplitRatio = 0.7)
+train_data <- subset(matched_data, split == TRUE)
+test_data <- subset(matched_data, split == FALSE)
+# Fit logistic regression on the balanced training data
+
+reduced_model <- glm(Attrition_numeric ~ .,
+                     data = trainingdata_balanced_ab, family = binomial())
+
+
+# Calculate VIF to check for multicollinearity
+
+vif(reduced_model)  # A VIF value greater than 5 is typically cause for concern
+# Predict using the reduced model
+predicted_probabilities <- predict(reduced_model, newdata = testingdata_reduced_ab, type = "response")
+predicted_classes <- ifelse(predicted_probabilities > 0.5, 1, 0)
+
+# Generate a confusion matrix to evaluate the model
+
+confusionMatrix(as.factor(predicted_classes), as.factor(testingdata_reduced_ab$Attrition_numeric))
+
+```
+
+
+# Variable Interaction for Logistic regression
+
+
+```{r}
+
+# Set seed for reproducibility
+set.seed(123)
+
+# Splitting the dataset into training and testing sets (70:30)
+split <- createDataPartition(training_set$Attrition_numeric, p = 0.7, list = FALSE, times = 1)
+trainingset_interaction <- training_set[split, ]
+testset_interaction <- training_set[-split, ]
+
+# Balancing the 'Attrition_numeric' class in the training set using upSample
+balanceddata_interaction <- upSample(x = trainingset_interaction[, names(trainingset_interaction) != "Attrition_numeric"],
+                                     y = trainingset_interaction$Attrition_numeric)
+
+# Check if the target variable is in the dataset
+# Since upSample does not change the target variable name, no renaming is needed
+balanceddata_interaction$Attrition_numeric <- as.factor(balanceddata_interaction$Class)
+balanceddata_interaction$Class <- NULL  # Clean up, just in case
+
+# Fit logistic regression model on balanced training set
+logistic_model_interaction <- glm(Attrition_numeric ~ Department + EducationField + Age + 
+                                  BusinessTravel + DailyRate + DistanceFromHome + Education + 
+                                  EnvironmentSatisfaction + Gender + HourlyRate + JobInvolvement + 
+                                  JobSatisfaction + MaritalStatus + MonthlyRate + NumCompaniesWorked + 
+                                  OverTime + PercentSalaryHike + PerformanceRating + RelationshipSatisfaction + 
+                                  StockOptionLevel + TrainingTimesLastYear + WorkLifeBalance + 
+                                  YearsSinceLastPromotion + YearsWithCurrManager +
+                                  MonthlyIncome * JobLevel + TotalWorkingYears * JobLevel + 
+                                  YearsInCurrentRole * YearsAtCompany, 
+                                  data = balanceddata_interaction, family = binomial())
+
+# Print out the results of the logistic regression model
+summary(logistic_model_interaction)
+
+# Predicting on the test set
+predictions <- predict(logistic_model_interaction, newdata = testset_interaction, type = "response")
+predicted_classes <- ifelse(predictions > 0.5, 1, 0)
+
+# Evaluate model performance
+confusionMatrix <- table(Predicted = predicted_classes, Actual = testset_interaction$Attrition_numeric)
+accuracy <- sum(diag(confusionMatrix)) / sum(confusionMatrix)
+
+# Print the confusion matrix and accuracy
+print(confusionMatrix)
+print(paste("Accuracy:", accuracy))
+
+
+```
+
+
+
+# Interpretation of Coefficients based on the interaction Logistic model - 
+
+OverTimeYes (Coefficient: 0.9370, p-value: < 2e-16)
+Most significant predictor of attrition.
+Employees working overtime are more likely to leave.
+Age (Coefficient: -0.4074, p-value: < 2e-16)
+Significant negative predictor.
+Older employees are less likely to leave.
+BusinessTravelTravel_Frequently (Coefficient: 1.4106, p-value: < 2e-16)
+Frequent business travelers are more likely to leave.
+DailyRate (Coefficient: -0.1841, p-value: 1.10e-06)
+Higher daily rates are associated with lower attrition.
+EnvironmentSatisfaction (Coefficient: -0.1985, p-value: 1.80e-06)
+Higher satisfaction leads to lower attrition.
+BusinessTravelTravel_Rarely (Coefficient: 0.6634, p-value: 3.30e-06)
+Less frequent travel still predicts higher attrition compared to no travel.
+YearsInCurrentRole (Coefficient: -0.3205, p-value: 1.88e-06)
+Longer time in current role associates with lower attrition.
+JobInvolvement (Coefficient: -0.1804, p-value: 5.82e-07)
+Higher job involvement is linked to lower attrition.
+JobSatisfaction (Coefficient: -0.1237, p-value: 0.000820)
+Higher job satisfaction reduces attrition.
+DistanceFromHome (Coefficient: 0.1253, p-value: 0.002589)
+Longer commutes increase the likelihood of leaving.
+
+
+
+
+
+
+
+# Confusion Matrix for Logistic model with Variable interaction
+
+
+
+```{r}
+
+# Convert predicted_classes and actual values to factors to ensure compatibility with confusionMatrix function
+predicted_factors <- factor(predicted_classes, levels = c(0, 1))
+actual_factors <- factor(testset_interaction$Attrition_numeric, levels = c(0, 1))
+
+evaluation_results <- confusionMatrix(predicted_factors, actual_factors)
+
+# Print the evaluation results which include confusion matrix, overall statistics, and class statistics
+print(evaluation_results)
+
+```
+
+
+
+
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(dplyr)
+
+model_summary <- summary(logistic_model_interaction)
+# Create a data frame of variables, their coefficients, and p-values
+coefficients <- model_summary$coefficients
+data <- as.data.frame(coefficients)
+data$Variable <- rownames(coefficients)
+rownames(data) <- NULL  # Clean up row names
+
+# Add direction based on the sign of the coefficient
+data$Direction <- ifelse(data$Estimate > 0, "Positive", "Negative")
+
+# Remove the intercept and split the data frame into positive and negative coefficients
+positive_coeffs <- data %>%
+  filter(Estimate > 0 & Variable != "(Intercept)") %>%
+  arrange(desc(Estimate))
+
+negative_coeffs <- data %>%
+  filter(Estimate < 0 & Variable != "(Intercept)") %>%
+  arrange(Estimate)
+
+# Define colors for direction
+positive_color <- "#EF553B"
+negative_color <- "#00CC96"
+
+# Function to clean up the plot look
+clean_theme <- function(p) {
+  p + theme_minimal() +
+    theme(
+      text = element_text(size = 16),
+      axis.title.y = element_text(size = 18),
+      axis.text.y = element_text(size = 12),
+      axis.ticks.y = element_blank(),
+      panel.grid.major.y = element_blank(),
+      panel.grid.minor.y = element_blank(),
+      legend.position = "none"
+    )
+}
+
+# Function to add coefficient labels inside the bars
+add_coefficient_labels <- function(p, data) {
+  p + geom_text(
+    data = data,
+    aes(label = sprintf("%.2f", Estimate), x = reorder(Variable, Estimate), y = ifelse(Direction == "Positive", Estimate - 0.05 * max(data$Estimate), Estimate + 0.05 * abs(min(data$Estimate)))),
+    size = 3,
+    hjust = ifelse(data$Direction == "Positive", 1.1, -0.1),
+    color = "white"
+  )
+}
+
+# Create the positive coefficients bar plot
+p1 <- ggplot(positive_coeffs, aes(x = reorder(Variable, Estimate), y = Estimate, fill = Direction)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_manual(values = positive_color) +
+  labs(title = "Positive Coefficients for Attrition")
+
+# Create the negative coefficients bar plot
+p2 <- ggplot(negative_coeffs, aes(x = reorder(Variable, -Estimate), y = Estimate, fill = Direction)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_manual(values = negative_color) +
+  labs(title = "Negative Coefficients for Attrition")
+
+# Apply the custom theme to the plot
+p1 <- clean_theme(p1)
+p1 <- add_coefficient_labels(p1, positive_coeffs)
+
+# Apply the custom theme to the plot
+p2 <- clean_theme(p2)
+p2 <- add_coefficient_labels(p2, negative_coeffs)
+
+# Print the plots
+print(p1)
+print(p2)
+
+
+
+# Convert predicted_classes and actual values to factors to ensure compatibility with confusionMatrix function
+predicted_factors <- factor(predicted_classes, levels = c(0, 1))
+actual_factors <- factor(testset_interaction$Attrition_numeric, levels = c(0, 1))
+
+# Load the caret package if you haven't already
+library(caret)
+
+evaluation_results <- confusionMatrix(predicted_factors, actual_factors)
+
+# Print the evaluation results which include confusion matrix, overall statistics, and class statistics
+print(evaluation_results)
+
+
+```
+
+
+
+
+
+
+
+# Decision Tree model with selected Variables (Without Jobrole, Daily rate, monthly rate etc)
+
+
+
+```{r}
+
+# Building the decision tree model 
+decision_tree_model <- rpart(Attrition_numeric ~ .,
+                             data = trainingdata_balanced_ab, 
+                             method = "class")
+
+```
+
+
+
+
+# Decision Tree predictions
+
+
+```{r}
+
+# Predicting using the decision tree model
+tree_predictions <- predict(decision_tree_model, newdata = testingdata_reduced_ab, type = "class")
+
+# Convert predictions to factor to ensure compatibility with confusionMatrix function
+# It's essential that the levels match those in the actual outcome variable
+tree_predictions_factor <- factor(tree_predictions, levels = levels(testingdata_reduced_ab$Attrition_numeric))
+
+# Evaluation using confusion matrix
+tree_evaluation_results <- confusionMatrix(tree_predictions_factor, testingdata_reduced_ab$Attrition_numeric)
+
+# Print the evaluation results
+print(tree_evaluation_results)
+
+```
+
+# Cross Validation for Decision Trees
+
+
+```{r}
+# Set up cross-validation settings
+train_control <- trainControl(
+  method = "cv",          # Use k-fold cross-validation
+  number = 5,            # Number of folds in k-fold cross-validation
+  savePredictions = "final",
+  classProbs = TRUE       # Store class probabilities (useful for ROC, AUC)
+)
+
+```
+
+
+
+
+
+
+```{r}
+# Check current levels of the factor
+levels(trainingdata_balanced_ab$Attrition_numeric)
+
+# Adjust the levels to be valid R variable names
+levels(trainingdata_balanced_ab$Attrition_numeric) <- make.names(levels(trainingdata_balanced_ab$Attrition_numeric))
+
+# Verify the changes
+levels(trainingdata_balanced_ab$Attrition_numeric)
+
+```
+
+# 10 Fold Cross validation
+
+
+```{r}
+
+
+# Set up cross-validation settings
+train_control <- trainControl(
+  method = "cv",          # Use k-fold cross-validation
+  number = 10,            # Number of folds in k-fold cross-validation
+  savePredictions = "final",
+  classProbs = TRUE       # Store class probabilities
+)
+
+# Train the model with cross-validation
+set.seed(123)  # For reproducibility
+decision_tree_model_cv <- train(
+  Attrition_numeric ~ .,   # Formula
+  data = trainingdata_balanced_ab,  # Training data
+  method = "rpart",        # Training method (decision tree)
+  trControl = train_control,  # Control object
+  metric = "Accuracy"      # Performance metric
+)
+
+# Print the model summary
+print(decision_tree_model_cv)
+
+
+```
+
+
+```{r}
+
+# Extract predictions and observed values from the model
+predictions <- decision_tree_model_cv$pred
+
+# Select the final predicted classes 
+final_predictions <- predictions$pred
+
+# The observed values
+observed_values <- predictions$obs
+
+# Generate the confusion matrix
+conf_matrix <- confusionMatrix(data = factor(final_predictions, levels = c("X0", "X1")),
+                               reference = factor(observed_values, levels = c("X0", "X1")))
+
+# Print the confusion matrix
+print(conf_matrix)
+
+
+```
+
+
+
+```{r}
+
+# Extract results
+results <- decision_tree_model_cv$results
+
+# Plotting the accuracy across different 'cp' values
+ggplot(data = results, aes(x = cp, y = Accuracy)) +
+  geom_line() +  # Line plot to show the trend
+  geom_point() + # Points to mark each tested 'cp' value
+  labs(title = "Accuracy vs Complexity Parameter (cp)",
+       x = "Complexity Parameter (cp)",
+       y = "Accuracy") +
+  theme_minimal()  # Using a minimal theme for cleaner visualization
+
+```
+
+
+
+# Decision Tree Cross validated optimal CP value
+
+```{r}
+# Train the decision tree model using rpart with the optimal cp value
+decision_tree <- rpart(Attrition_numeric ~ ., 
+                       data = trainingdata_balanced_ab, 
+                       method = "class", 
+                       control = rpart.control(cp = 0.01978022))
+
+# If you wish to train using the entire dataset and visualize, otherwise skip this
+# and use the model from the train() function for accuracy results.
+
+```
+
+
+
+# Decision Tree Cross validated Plot
+
+
+```{r}
+# Plot the decision tree
+rpart.plot(decision_tree, 
+           main = "Decision Tree Plot", 
+           extra = 104,  # Display splits and class distribution
+           under = TRUE,  # Display the numbers under the node
+           faclen = 0)  # Factor length, use 0 to auto adjust
+
+```
+
+
+
+# Decision Tree plot with all variables
+
+
+```{r}
+
+
+
+# Plotting the decision tree
+rpart.plot(decision_tree_model)
+
+```
+
+
+
+# Decision Tree Variable Importance
+
+
+```{r}
+
+variable_importance <- decision_tree_model$variable.importance
+
+# Order variables by importance in descending order
+ordered_importance <- sort(variable_importance, decreasing = TRUE)
+
+# Print the ordered variable importance
+ordered_importance
+
+```
+
+
+# Variable Importance plot
+
+
+
+```{r}
+
+# Provided variable importance scores
+variable_importance <- c(
+  Age = 785.6839521, OverTime = 533.4903002, StockOptionLevel = 369.9393083, 
+  MaritalStatus = 276.8573304, BusinessTravel = 109.6644593, Education = 65.3445040, 
+  YearsAtCompany = 64.4883620, PercentSalaryHike = 18.5971663, TrainingTimesLastYear = 16.7410552, 
+  NumCompaniesWorked = 15.4888790, EnvironmentSatisfaction = 13.1240286, EducationField = 4.1421277, 
+  YearsSinceLastPromotion = 0.3944884
+)
+
+# Sort the importance scores in descending order
+sorted_importance <- sort(variable_importance, decreasing = TRUE)
+
+# Print sorted variable importance
+print(sorted_importance)
+
+# Create a data frame for plotting
+importance_df <- data.frame(Variable = names(sorted_importance), Importance = sorted_importance)
+
+# Plot using ggplot2 without reversal
+ggplot(importance_df, aes(x = reorder(Variable, Importance), y = Importance, fill = Importance)) +
+  geom_col() +  # Use geom_col() which is equivalent to geom_bar(stat="identity")
+  scale_fill_gradient(low = "blue", high = "red") +  # Color gradient from blue to red
+  coord_flip() +  # Flip coordinates for horizontal bar plot
+  xlab("Variable") + 
+  ylab("Importance") +
+  ggtitle("Variable Importance from Model") +
+  theme_minimal() +  # Apply a minimal theme
+  theme(legend.position = "none")  # Hide the legend if not required
+
+```
+
+
+
+#Full Decision Tree model with all predictors
+
+
+```{r}
+
+
+cp_value <- 0.01  # Adjust this as necessary
+
+# Rebuild the decision tree model with the new complexity parameter
+tree_model <- rpart(Attrition_numeric ~ ., data = training_set, method = "class", cp = cp_value)
+
+# Plot the decision tree with adjusted parameters
+rpart.plot(tree_model, main="Decision Tree for Attrition Prediction",
+           box.palette="RdYlGn",       # Use a red-yellow-green color palette
+           shadow.col="gray",          # Add shadow for a 3D effect
+           cex=0.65,                    # Adjust text size as needed
+           tweak= 1,                  # Adjust the overall size of plot elements
+           fallen.leaves=FALSE,         # Align leaf nodes at the bottom of the graph
+           type=4,                     # Use enhanced text and splits
+           extra=104)                  # Display extra node information
+
+# Evaluate the model on the testing set
+predictions <- predict(tree_model, newdata = testing_set, type = "class")
+confusionMatrix(predictions, testing_set$Attrition_numeric)
+
+
+```
+
+
+```{r}
+# Extract variable importance from the rpart model
+var_importance <- as.data.frame(tree_model$variable.importance)
+
+# Give names to the dataframe
+names(var_importance) <- c("Importance")
+
+# Sort the variables by importance
+var_importance_sorted <- var_importance[order(-var_importance$Importance), , drop = FALSE]
+
+# Create a barplot
+barplot(var_importance_sorted$Importance, main = "Variable Importance",
+        xlab = "Variables", ylab = "Importance", las = 2, cex.names = 0.7)
+
+# If you have a lot of variables and the names are cluttered, you can increase the margin size
+par(mar = c(12, 5, 4, 2) + 0.1)  # Adjust the bottom margin to fit variable names
+barplot(var_importance_sorted$Importance, main = "Variable Importance",
+        xlab = "Variables", ylab = "Importance", las = 2, cex.names = 0.7)
+
+```
+
+
+
+
+# Variable importance for DT model 2 (With full predictors)
+
+
+```{r improved-bar-plot, echo=TRUE, message=FALSE, warning=FALSE}
+
+
+var_importance_sorted <- data.frame(
+  Variable = rownames(var_importance_sorted),
+  Importance = var_importance_sorted$Importance
+)
+
+ggplot(var_importance_sorted, aes(x = reorder(Variable, Importance), y = Importance)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() + # Flip coordinates to make bars horizontal
+  labs(title = "Variable Importance", 
+       x = "Importance", 
+       y = "") + # Y label is not needed since variables are on the Y axis
+  theme_minimal() +
+  theme(axis.text.y = element_text(angle = 0, hjust = 1, size = 8), # Adjust the text size as needed
+        axis.title.y = element_blank(), # Remove the Y axis title
+        plot.title = element_text(hjust = 0.5)) # Center the plot title
+
+
+```
+
+# Splitting of data into subsets for Sales, Human Resource and Research and development for Decision Trees
+
+
+```{r}
+
+# Create subsets for each department
+sales_data <- subset(ab_dataset_reduced, Department == "Sales")
+hr_data <- subset(ab_dataset_reduced, Department == "Human Resources")
+rnd_data <- subset(ab_dataset_reduced, Department == "Research & Development")
+
+# Function to process a department dataset
+process_department_data <- function(data) {
+  set.seed(123) # for reproducibility
+  
+  # Split data into training and testing
+  index <- createDataPartition(y = data$Attrition_numeric, p = 0.7, list = FALSE)
+  training_set <- data[index, ]
+  testing_set <- data[-index, ]
+  
+  # Balance attrition in the training set
+  downsampled_data <- downSample(x = training_set[, -which(names(training_set) == "Attrition_numeric")],
+                                 y = training_set$Attrition_numeric)
+  
+  # Fix the outcome variable name after downsampling
+  downsampled_data$Attrition_numeric <- downsampled_data$Class
+  downsampled_data$Class <- NULL  # Remove the 'Class' column as it's no longer needed
+
+  # Convert Attrition_numeric to a factor (if not already)
+  downsampled_data$Attrition_numeric <- factor(downsampled_data$Attrition_numeric, levels = c(0, 1))
+
+
+  # Run a decision tree model
+  tree_model <- rpart(Attrition_numeric ~ ., data = downsampled_data, method = "class")
+
+  # Predict on the testing set
+  predictions <- predict(tree_model, newdata = testing_set, type = "class")
+  
+  # Evaluate the model
+  confusion <- confusionMatrix(predictions, testing_set$Attrition_numeric)
+  
+  # Return the model and its evaluation
+  return(list(model = tree_model, evaluation = confusion))
+}
+
+# Process each department dataset
+sales_results <- process_department_data(sales_data)
+hr_results <- process_department_data(hr_data)
+rnd_results <- process_department_data(rnd_data)
+
+  
+
+```
+
+
+
+
+
+# Predictions on test set and Confusion Matrix
+
+
+```{r}
+
+# Process each department dataset
+sales_results <- process_department_data(sales_data)
+hr_results <- process_department_data(hr_data)
+rnd_results <- process_department_data(rnd_data)
+
+# Print the confusion matrix for the Sales department
+print("Confusion Matrix for Sales Department:")
+print(sales_results$evaluation)
+
+# Print the confusion matrix for the HR department
+print("Confusion Matrix for HR Department:")
+print(hr_results$evaluation)
+
+# Print the confusion matrix for the R&D department
+print("Confusion Matrix for R&D Department:")
+print(rnd_results$evaluation)
+
+```
+
+
+# Variance Importance for Sales, HR and R&D
+
+```{r}
+# Calculate variable importance for each department's model
+sales_var_imp <- varImp(sales_results$model, scale = FALSE)
+hr_var_imp <- varImp(hr_results$model, scale = FALSE)
+rnd_var_imp <- varImp(rnd_results$model, scale = FALSE)
+
+# Print the variable importance for Sales department
+print("Variable Importance for Sales Department:")
+print(sales_var_imp)
+
+# Print the variable importance for HR department
+print("Variable Importance for HR Department:")
+print(hr_var_imp)
+
+# Print the variable importance for R&D department
+print("Variable Importance for R&D Department:")
+print(rnd_var_imp)
+```
+
+
+
+
+
+```{r}
+# Plot variable importance for Sales department
+plot(sales_var_imp, main="Variable Importance - Sales Department")
+
+# Plot variable importance for HR department
+plot(hr_var_imp, main="Variable Importance - HR Department")
+
+# Plot variable importance for R&D department
+plot(rnd_var_imp, main="Variable Importance - R&D Department")
+
+```
+
+
+
+
+
+
+```{r sales-var-imp-plot, echo=TRUE, message=FALSE, warning=FALSE}
+
+
+# Create a data frame for the Sales department variable importance
+sales_data <- data.frame(
+  Variable = c("Age", "BusinessTravel", "DailyRate", "DistanceFromHome",
+               "Education", "EnvironmentSatisfaction", "HourlyRate",
+               "JobInvolvement", "JobLevel", "JobRole"),
+  Importance = c(151.418909, 116.449477, 64.651043, 93.528052,
+                 7.479869, 15.834588, 61.812332, 62.588595,
+                 7.500696, 27.948940)
+)
+
+# Plotting
+ggplot(sales_data, aes(x = reorder(Variable, -Importance), y = Importance)) +
+  geom_col(fill = "steelblue") +
+  labs(title = "Variable Importance for Sales Department",
+       x = "Variable",
+       y = "Importance") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+
+```
+
+
+
+
+
+```{r hr-var-imp-plot, echo=TRUE, message=FALSE, warning=FALSE}
+
+
+# Create a data frame for the HR department variable importance
+hr_data <- data.frame(
+  Variable = c("Age", "BusinessTravel", "DailyRate", "DistanceFromHome",
+               "Education", "EducationField", "EnvironmentSatisfaction",
+               "HourlyRate", "JobInvolvement", "JobRole"),
+  Importance = c(48.130178, 22.913872, 31.306332, 60.253362,
+                 10.869100, 46.443127, 61.366961, 26.498422,
+                 5.205372, 2.909091)
+)
+
+# Plotting
+ggplot(hr_data, aes(x = reorder(Variable, -Importance), y = Importance)) +
+  geom_col(fill = "darkgreen") +
+  labs(title = "Variable Importance for HR Department",
+       x = "Variable",
+       y = "Importance") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+
+
+
+```{r rnd-var-imp-plot, echo=TRUE, message=FALSE, warning=FALSE}
+
+
+# Create a data frame for the R&D department variable importance
+rnd_data <- data.frame(
+  Variable = c("Age", "BusinessTravel", "DailyRate", "DistanceFromHome",
+               "Education", "JobInvolvement", "JobSatisfaction",
+               "MaritalStatus", "MonthlyIncome", "MonthlyRate"),
+  Importance = c(133.977348, 69.933187, 104.876065, 6.121094,
+                 16.026592, 61.172651, 56.868178, 95.858599,
+                 128.497173, 49.547281)
+)
+
+# Plotting
+ggplot(rnd_data, aes(x = reorder(Variable, -Importance), y = Importance)) +
+  geom_col(fill = "firebrick") +
+  labs(title = "Variable Importance for R&D Department",
+       x = "Variable",
+       y = "Importance") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+
+
+
+# Final Logistic and Decision Tree models and their Confusion Matrix
+
+```{r}
+# Convert predictions and actual data to factors with consistent levels
+predicted_classes_factor <- factor(predicted_classes, levels = c(0, 1))
+actual_classes_factor <- factor(testset_interaction$Attrition_numeric, levels = c(0, 1))
+
+```
+
+
+
+```{r}
+# Calculate and print the confusion matrix and related statistics for logistic regression
+conf_matrix_logistic <- confusionMatrix(data = predicted_classes_factor, reference = actual_classes_factor)
+print(conf_matrix_logistic)
+
+```
+
+
+```{r}
+
+tree_predictions <- decision_tree_model_cv$pred
+predicted_classes_tree <- factor(tree_predictions$pred, levels = c("X0", "X1"))
+actual_classes_tree <- factor(tree_predictions$obs, levels = c("X0", "X1"))
+
+# Calculate and print the confusion matrix and related statistics for decision tree
+conf_matrix_tree <- confusionMatrix(data = predicted_classes_tree, reference = actual_classes_tree)
+print(conf_matrix_tree)
+
+```
+
+
+
+
+```{r}
+
+
+# Compute the confusion matrices
+conf_matrix_logistic <- confusionMatrix(as.factor(predicted_classes), as.factor(testset_interaction$Attrition_numeric))
+conf_matrix_tree <- confusionMatrix(factor(decision_tree_model_cv$pred$pred, levels = c("X0", "X1")),
+                                    factor(decision_tree_model_cv$pred$obs, levels = c("X0", "X1")))
+
+# Function to extract metrics from confusion matrix
+extract_metrics <- function(cm) {
+  data.frame(
+    Accuracy = cm$overall['Accuracy'],
+    Kappa = cm$overall['Kappa'],
+    Precision = cm$byClass['Pos Pred Value'],
+    Recall = cm$byClass['Sensitivity'],
+    F1 = cm$byClass['F1']
+  )
+}
+
+# Extract metrics
+metrics_logistic <- extract_metrics(conf_matrix_logistic)
+metrics_tree <- extract_metrics(conf_matrix_tree)
+
+# Combine metrics into one dataframe for plotting
+metrics_df <- rbind(metrics_logistic, metrics_tree)
+metrics_df$Model <- c("Logistic Regression", "Decision Tree")
+metrics_df <- reshape2::melt(metrics_df, id.vars = "Model")
+
+```
+
+
+
+
+
+```{r}
+# Plotting the metrics with additional enhancements
+ggplot(metrics_df, aes(x = variable, y = value, fill = Model)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8)) +
+  geom_text(aes(label = round(value, 2)), 
+            position = position_dodge(width = 0.8), 
+            vjust = -0.25, 
+            size = 3.5) +
+  labs(title = "Comparison of Model Metrics", x = "Metric", y = "Value") +
+  theme_minimal(base_size = 11.5) +  # Increasing base size for better readability
+  scale_fill_brewer(palette = "Set1") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom") +  # Adjust legend position
+  theme(plot.title = element_text(size = 20, face = "bold"),  # Enhance title style
+        axis.title = element_text(size = 14))  # Enhance axis titles
+
+```
+
+
+
+
+```{r}
+library(pROC)
+library(ggplot2)
+library(plotly)
+
+# Function to plot ROC curve and calculate AUC
+plot_roc_auc <- function(predicted_probs, actuals, model_name) {
+  roc_obj <- roc(actuals, predicted_probs)
+  auc_value <- auc(roc_obj)
+  
+  # Create a data frame for plotting
+  roc_data <- data.frame(
+    FPR = roc_obj$specificities,
+    TPR = roc_obj$sensitivities
+  )
+  
+  # Plot ROC curve using ggplot2
+  roc_plot <- ggplot(roc_data, aes(x = FPR, y = TPR)) +
+    geom_line(color = ifelse(model_name == "Logistic Regression", "blue", "green"), size = 1.5) +
+    geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+    ggtitle(paste("ROC Curve -", model_name)) +
+    xlab("False Positive Rate (1 - Specificity)") +
+    ylab("True Positive Rate (Sensitivity)") +
+    theme_minimal() +
+    theme(plot.title = element_text(hjust = 0.5))
+  
+  # Convert ggplot to plotly object for interactivity
+  roc_plotly <- ggplotly(roc_plot) %>% layout(legend = list(x = 0.8, y = 0.2))  # Adjust legend position
+  
+  # Add AUC value to the plot
+  auc_text <- paste("AUC =", round(auc_value, 2))
+  
+  return(list(plot = roc_plotly, auc = auc_text))
+}
+
+# Calculate predicted probabilities for logistic regression model (using "logistic_model_interaction")
+predicted_probs_logistic <- predict(logistic_model_interaction, newdata = testset_interaction, type = "response")
+# Plot ROC curve and calculate AUC for logistic regression model
+roc_logistic <- plot_roc_auc(predicted_probs_logistic, testset_interaction$Attrition_numeric, "Logistic Regression")
+
+# Calculate predicted probabilities for decision tree model
+predicted_probs_tree <- predict(decision_tree_model_cv, newdata = testset_interaction, type = "prob")[, "X1"]
+# Plot ROC curve and calculate AUC for decision tree model
+roc_tree <- plot_roc_auc(predicted_probs_tree, testset_interaction$Attrition_numeric, "Decision Tree")
+
+roc_logistic$auc  # Print AUC for logistic regression model
+roc_tree$auc  # Print AUC for decision tree model
+
+roc_logistic$plot  # Display ROC plot for logistic regression model
+roc_tree$plot  # Display ROC plot for decision tree model
+
+```
+
+
+
